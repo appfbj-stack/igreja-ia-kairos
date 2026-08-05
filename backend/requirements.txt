@@ -19,5 +19,7 @@ bcrypt==4.0.1
 # Voz / audio server-side (fallback para Web Speech API)
 # faster-whisper = STT local (transcricao), sem chave, sem custo
 faster-whisper==1.0.3
+# requests = dependencia do faster-whisper p/ download do modelo
+requests==2.32.3
 # edge-tts = TTS usando Microsoft Edge (sem chave, boa qualidade)
-edge-tts==6.1.18
+edge-tts==6.1.20  # versao mais nova com tokens atualizados
