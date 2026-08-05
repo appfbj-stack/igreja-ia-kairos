@@ -48,3 +48,7 @@ $RECYCLE.BIN/
 *.local
 .env.local
 .env.*.local
+# Arquivos reais com secrets — manter apenas os *.example
+.env
+.env.docker
+.env.*.docker

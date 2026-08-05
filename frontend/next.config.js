@@ -1,7 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // Para acesso na rede local (celular)
+  // Output standalone para Docker (imagem final menor)
+  output: 'standalone',
+  // Para acesso na rede local (celular em dev)
   async rewrites() {
     return [
       {

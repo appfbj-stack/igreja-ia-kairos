@@ -8,7 +8,8 @@ router = APIRouter(prefix="/chat", tags=["Chat IA"])
 
 @router.post("/", response_model=ChatResponse)
 def chat(req: ChatRequest, db: Session = Depends(get_db)):
-    result = process_message(req.message, db)
+    history = [h.model_dump() for h in (req.history or [])]
+    result = process_message(req.message, db, history=history)
     return ChatResponse(
         reply=result.get("reply", ""),
         actions=result.get("actions"),

@@ -94,12 +94,28 @@ App: http://localhost:3000
 
 ## Próximos passos (fora do MVP)
 
-- Integração real com MiniMax M3 / outra LLM
+- Integração real com MiniMax M3 / DeepSeek / OpenRouter (✅ já plugado — `LLM_PROVIDER` no `.env`)
 - WhatsApp
 - Módulo financeiro
 - Portal do membro
 - App Android nativo
 - Autenticação completa (pastor / dirigente / secretaria)
+
+## Deploy (VPS Dokploy)
+
+Ver [`docs/DEPLOY.md`](docs/DEPLOY.md) para o passo a passo completo.
+
+Resumo rápido:
+
+```bash
+ssh -i C:\Users\ferna\.ssh\vps root@187.77.229.227
+cd /opt/kairos-igreja
+git clone https://github.com/appfbj-stack/igreja-ia-kairos.git .
+cp .env.docker.example .env.docker  # editar com LLM_API_KEY se quiser
+docker compose --env-file .env.docker up -d --build
+```
+
+Depois configurar Caddy: `igreja.fbautomacao.space` → 8024 (frontend), `/api/*` → 8023 (backend).
 
 ## Tecnologias
 
