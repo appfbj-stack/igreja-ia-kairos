@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Mic, MicOff, Paperclip, Volume2, VolumeX, Loader2, Bot, User, FileText, Image as ImageIcon, X, Trash2 } from "lucide-react";
+import { Send, Mic, MicOff, Paperclip, Volume2, VolumeX, Loader2, Bot, User, FileText, Image as ImageIcon, X, Trash2, AudioLines } from "lucide-react";
 
 // =========================================================================
 // Tipos
@@ -55,12 +55,38 @@ async function uploadFile(file: File): Promise<any> {
   return res.json();
 }
 
+async function transcribeAudio(file: File): Promise<{ text: string; language: string; duration: number }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(`${API_BASE}/transcribe/`, { method: "POST", body: fd });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || "Erro na transcricao");
+  }
+  return res.json();
+}
+
+async function synthesizeSpeech(text: string, voice: string = "masculino"): Promise<string> {
+  // Retorna URL do audio (blob) - usa POST com query string
+  const u = new URL(`${API_BASE}/tts/`);
+  u.searchParams.set("text", text);
+  u.searchParams.set("voice", voice);
+  const res = await fetch(u.toString(), { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || "Erro no TTS");
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
 // =========================================================================
 // Web Speech API hooks
 // =========================================================================
 function useSpeechRecognition(onResult: (text: string, isFinal: boolean) => void) {
   const [listening, setListening] = useState(false);
   const [supported, setSupported] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
@@ -86,16 +112,22 @@ function useSpeechRecognition(onResult: (text: string, isFinal: boolean) => void
       else if (interimText) onResult(interimText, false);
     };
     rec.onend = () => setListening(false);
-    rec.onerror = () => setListening(false);
+    rec.onerror = (e: any) => {
+      setListening(false);
+      setError(e.error || "erro");
+    };
     recognitionRef.current = rec;
   }, [onResult]);
 
   const start = useCallback(() => {
     if (recognitionRef.current && !listening) {
+      setError(null);
       try {
         recognitionRef.current.start();
         setListening(true);
-      } catch {}
+      } catch (e: any) {
+        setError(e?.message || "erro ao iniciar");
+      }
     }
   }, [listening]);
 
@@ -106,27 +138,141 @@ function useSpeechRecognition(onResult: (text: string, isFinal: boolean) => void
     }
   }, [listening]);
 
-  return { listening, supported, start, stop };
+  return { listening, supported, error, start, stop };
+}
+
+// =========================================================================
+// Hook MediaRecorder (fallback server-side: grava audio e envia pra /transcribe)
+// Funciona em qualquer navegador moderno (Chrome, Firefox, Safari, Edge)
+// =========================================================================
+function useMediaRecorder(onTranscribed: (text: string) => void) {
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [supported, setSupported] = useState(true);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      setSupported(false);
+    }
+  }, []);
+
+  const start = useCallback(async () => {
+    if (recording || !supported) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 },
+      });
+      streamRef.current = stream;
+      // Prefere webm/opus (Chrome), fallback para mp4 (Safari)
+      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/mp4")
+        ? "audio/mp4"
+        : "";
+      const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      recorderRef.current = rec;
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+      rec.onstop = async () => {
+        setRecording(false);
+        setTranscribing(true);
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
+        // Determina extensao
+        const ext = rec.mimeType?.includes("mp4") ? ".mp4" : ".webm";
+        const file = new File([blob], `recording${ext}`, { type: rec.mimeType || "audio/webm" });
+        try {
+          const result = await transcribeAudio(file);
+          if (result.text) onTranscribed(result.text);
+        } catch (e: any) {
+          alert(`Erro na transcricao: ${e.message}`);
+        } finally {
+          setTranscribing(false);
+          // Libera o mic
+          streamRef.current?.getTracks().forEach((t) => t.stop());
+          streamRef.current = null;
+        }
+      };
+      rec.start();
+      setRecording(true);
+    } catch (e: any) {
+      alert(`Erro ao acessar microfone: ${e.message}`);
+      setRecording(false);
+    }
+  }, [recording, supported, onTranscribed]);
+
+  const stop = useCallback(() => {
+    if (recorderRef.current && recording) {
+      recorderRef.current.stop();
+    }
+  }, [recording]);
+
+  return { recording, transcribing, supported, start, stop };
 }
 
 function useSpeechSynthesis() {
   const [supported] = useState(typeof window !== "undefined" && "speechSynthesis" in window);
-  const speak = useCallback((text: string) => {
-    if (!supported || !text) return;
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = "pt-BR";
-    u.rate = 1.05;
-    u.pitch = 1;
-    const voices = window.speechSynthesis.getVoices();
-    const pt = voices.find((v) => v.lang.startsWith("pt-BR")) || voices.find((v) => v.lang.startsWith("pt"));
-    if (pt) u.voice = pt;
-    window.speechSynthesis.speak(u);
+  const [mode, setMode] = useState<"browser" | "server">(supported ? "browser" : "server");
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Atualiza modo se o suporte mudar
+  useEffect(() => {
+    if (supported) setMode("browser");
   }, [supported]);
+
+  const speak = useCallback(async (text: string) => {
+    if (!text) return;
+    // Para qualquer fala em andamento
+    if (supported) window.speechSynthesis.cancel();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+
+    // Tenta browser primeiro
+    if (mode === "browser" && supported) {
+      try {
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = "pt-BR";
+        u.rate = 1.05;
+        u.pitch = 1;
+        const voices = window.speechSynthesis.getVoices();
+        const pt = voices.find((v) => v.lang.startsWith("pt-BR")) || voices.find((v) => v.lang.startsWith("pt"));
+        if (pt) u.voice = pt;
+        window.speechSynthesis.speak(u);
+        return;
+      } catch (e) {
+        // Cai pra server-side
+        setMode("server");
+      }
+    }
+
+    // Fallback server-side
+    try {
+      const url = await synthesizeSpeech(text, "masculino");
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => URL.revokeObjectURL(url);
+      await audio.play();
+    } catch (e) {
+      console.error("TTS falhou:", e);
+    }
+  }, [supported, mode]);
+
   const cancel = useCallback(() => {
     if (supported) window.speechSynthesis.cancel();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
   }, [supported]);
-  return { supported, speak, cancel };
+
+  return { supported, mode, setMode, speak, cancel };
 }
 
 // =========================================================================
@@ -182,6 +328,22 @@ export default function ChatPage() {
   }, []);
 
   const speech = useSpeechRecognition(handleSpeechResult);
+
+  // Fallback server-side via MediaRecorder (funciona em qualquer navegador/celular)
+  const handleMediaTranscript = useCallback((text: string) => {
+    setInput((prev) => (prev ? prev + " " + text : text));
+  }, []);
+  const mediaRec = useMediaRecorder(handleMediaTranscript);
+
+  // Decide qual STT usar
+  const sttMode: "browser" | "server" | "none" = speech.supported
+    ? "browser"
+    : mediaRec.supported
+    ? "server"
+    : "none";
+
+  // Audio element ref para TTS server-side
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // =========================================================================
   // Upload de arquivo
@@ -486,7 +648,7 @@ export default function ChatPage() {
               }}
             />
 
-            {speech.supported && (
+            {sttMode === "browser" && (
               <button
                 onClick={speech.listening ? speech.stop : speech.start}
                 className={`p-2.5 rounded-xl transition ${
@@ -494,10 +656,37 @@ export default function ChatPage() {
                     ? "bg-red-500 text-white animate-pulse"
                     : "text-slate-500 hover:bg-slate-100"
                 }`}
-                title={speech.listening ? "Parar gravacao" : "Falar"}
+                title={speech.listening ? "Parar gravacao" : "Falar (reconhecimento do navegador)"}
                 disabled={loading}
               >
                 {speech.listening ? <MicOff size={20} /> : <Mic size={20} />}
+              </button>
+            )}
+
+            {sttMode === "server" && (
+              <button
+                onClick={mediaRec.recording || mediaRec.transcribing ? mediaRec.stop : mediaRec.start}
+                className={`p-2.5 rounded-xl transition ${
+                  mediaRec.recording
+                    ? "bg-red-500 text-white animate-pulse"
+                    : mediaRec.transcribing
+                    ? "bg-amber-500 text-white"
+                    : "text-slate-500 hover:bg-slate-100"
+                }`}
+                title={mediaRec.recording ? "Parar e transcrever" : "Gravar audio (servidor)"}
+                disabled={loading || mediaRec.transcribing}
+              >
+                {mediaRec.transcribing ? <Loader2 size={20} className="animate-spin" /> : mediaRec.recording ? <MicOff size={20} /> : <AudioLines size={20} />}
+              </button>
+            )}
+
+            {sttMode === "none" && (
+              <button
+                disabled
+                className="p-2.5 text-slate-300 rounded-xl cursor-not-allowed"
+                title="Voz nao suportada neste navegador"
+              >
+                <MicOff size={20} />
               </button>
             )}
 
@@ -505,7 +694,13 @@ export default function ChatPage() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKey}
-              placeholder={speech.listening ? "Ouvindo..." : "Digite, fale ou anexe um arquivo..."}
+              placeholder={
+                speech.listening ? "Ouvindo..." :
+                mediaRec.recording ? "Gravando audio..." :
+                mediaRec.transcribing ? "Transcrevendo audio..." :
+                sttMode === "server" ? "Digite, grave audio ou anexe um arquivo..." :
+                "Digite ou anexe um arquivo..."
+              }
               rows={1}
               disabled={loading}
               className="flex-1 px-4 py-2.5 border border-slate-200 rounded-xl text-sm resize-none focus:outline-none focus:ring-2 focus:ring-kairos-500 max-h-32 disabled:opacity-50"

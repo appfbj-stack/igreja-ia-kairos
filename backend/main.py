@@ -7,7 +7,7 @@ import os
 from app.database import init_db, SessionLocal
 from app.models.congregation import Congregation
 from app.models.user import User
-from app.routers import members, congregations, agenda, pdfs, chat, import_export, backup, upload
+from app.routers import members, congregations, agenda, pdfs, chat, import_export, backup, upload, transcribe, tts
 
 app = FastAPI(
     title="Kairos Igreja",
@@ -38,6 +38,8 @@ app.include_router(chat.router, prefix="/api")
 app.include_router(import_export.router, prefix="/api")
 app.include_router(backup.router, prefix="/api")
 app.include_router(upload.router, prefix="/api")
+app.include_router(transcribe.router, prefix="/api")
+app.include_router(tts.router, prefix="/api")
 
 @app.on_event("startup")
 def on_startup():

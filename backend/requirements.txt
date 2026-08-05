@@ -15,3 +15,9 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 # bcrypt pinado em 4.0.x — passlib 1.7.4 quebra com bcrypt 4.1+ (removida __about__)
 bcrypt==4.0.1
+
+# Voz / audio server-side (fallback para Web Speech API)
+# faster-whisper = STT local (transcricao), sem chave, sem custo
+faster-whisper==1.0.3
+# edge-tts = TTS usando Microsoft Edge (sem chave, boa qualidade)
+edge-tts==6.1.18
