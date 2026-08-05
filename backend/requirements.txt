@@ -13,4 +13,5 @@ Pillow==10.4.0
 httpx==0.27.2
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
-bcrypt==4.2.0
+# bcrypt pinado em 4.0.x — passlib 1.7.4 quebra com bcrypt 4.1+ (removida __about__)
+bcrypt==4.0.1
