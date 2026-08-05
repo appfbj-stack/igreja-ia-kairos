@@ -1,117 +1,537 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
-import { StatCard } from "@/components/StatCard";
-import { Users, Church, Calendar, Cake } from "lucide-react";
-import Link from "next/link";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { Send, Mic, MicOff, Paperclip, Volume2, VolumeX, Loader2, Bot, User, FileText, Image as ImageIcon, X, Trash2 } from "lucide-react";
 
-export default function Dashboard() {
-  const [stats, setStats] = useState({ total: 0, congs: 0, aniv: 0, agenda: 0 });
-  const [anivList, setAnivList] = useState<any[]>([]);
-  const [proximos, setProximos] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+// =========================================================================
+// Tipos
+// =========================================================================
+type Attachment = {
+  id: string;
+  file: File;
+  preview?: string;
+  type: "image" | "spreadsheet" | "text" | "audio" | "other";
+  uploaded?: any; // resposta do /api/upload
+  uploading?: boolean;
+  error?: string;
+};
+
+type Msg = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  attachments?: Attachment[];
+  actions?: any[];
+  source?: "llm" | "rules";
+  ts: number;
+};
+
+// =========================================================================
+// API helper
+// =========================================================================
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://igrejak.fbautomacao.space/api";
+
+async function postJSON<T>(path: string, body: any): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || "Erro na requisição");
+  }
+  return res.json();
+}
+
+async function uploadFile(file: File): Promise<any> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(`${API_BASE}/upload/`, { method: "POST", body: fd });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || "Erro no upload");
+  }
+  return res.json();
+}
+
+// =========================================================================
+// Web Speech API hooks
+// =========================================================================
+function useSpeechRecognition(onResult: (text: string, isFinal: boolean) => void) {
+  const [listening, setListening] = useState(false);
+  const [supported, setSupported] = useState(true);
+  const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
-    async function load() {
-      try {
-        const [count, congs, aniv, prox] = await Promise.all([
-          api.countMembers(),
-          api.getCongregations(),
-          api.aniversariantes("dia"),
-          api.getProximos(),
-        ]);
-        setStats({
-          total: count.total,
-          congs: congs.length,
-          aniv: aniv.total || 0,
-          agenda: prox.length,
-        });
-        setAnivList(aniv.aniversariantes || []);
-        setProximos(prox.slice(0, 5));
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
-      }
+    if (typeof window === "undefined") return;
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) {
+      setSupported(false);
+      return;
     }
-    load();
+    const rec = new SR();
+    rec.lang = "pt-BR";
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.onresult = (e: any) => {
+      let finalText = "";
+      let interimText = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalText += t;
+        else interimText += t;
+      }
+      if (finalText) onResult(finalText, true);
+      else if (interimText) onResult(interimText, false);
+    };
+    rec.onend = () => setListening(false);
+    rec.onerror = () => setListening(false);
+    recognitionRef.current = rec;
+  }, [onResult]);
+
+  const start = useCallback(() => {
+    if (recognitionRef.current && !listening) {
+      try {
+        recognitionRef.current.start();
+        setListening(true);
+      } catch {}
+    }
+  }, [listening]);
+
+  const stop = useCallback(() => {
+    if (recognitionRef.current && listening) {
+      recognitionRef.current.stop();
+      setListening(false);
+    }
+  }, [listening]);
+
+  return { listening, supported, start, stop };
+}
+
+function useSpeechSynthesis() {
+  const [supported] = useState(typeof window !== "undefined" && "speechSynthesis" in window);
+  const speak = useCallback((text: string) => {
+    if (!supported || !text) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "pt-BR";
+    u.rate = 1.05;
+    u.pitch = 1;
+    const voices = window.speechSynthesis.getVoices();
+    const pt = voices.find((v) => v.lang.startsWith("pt-BR")) || voices.find((v) => v.lang.startsWith("pt"));
+    if (pt) u.voice = pt;
+    window.speechSynthesis.speak(u);
+  }, [supported]);
+  const cancel = useCallback(() => {
+    if (supported) window.speechSynthesis.cancel();
+  }, [supported]);
+  return { supported, speak, cancel };
+}
+
+// =========================================================================
+// Render markdown simples (**bold**, *italic*, quebras)
+// =========================================================================
+function renderMarkdown(text: string) {
+  if (!text) return null;
+  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g);
+  return parts.map((p, i) => {
+    if (p.startsWith("**") && p.endsWith("**")) return <strong key={i}>{p.slice(2, -2)}</strong>;
+    if (p.startsWith("*") && p.endsWith("*")) return <em key={i}>{p.slice(1, -1)}</em>;
+    return <span key={i}>{p}</span>;
+  });
+}
+
+// =========================================================================
+// Componente principal
+// =========================================================================
+export default function ChatPage() {
+  const [messages, setMessages] = useState<Msg[]>([
+    {
+      id: "welcome",
+      role: "assistant",
+      content:
+        "🙏 **Ola! Eu sou o Kairos**, seu assistente pastoral.\n\nPosso cadastrar membros, buscar aniversariantes, criar lembretes, responder perguntas sobre a igreja - tudo por aqui.\n\nVoce pode **digitar** ou **falar** (icone do microfone). Tambem pode enviar fotos de membros ou planilhas Excel pra eu processar.",
+      ts: Date.now(),
+    },
+  ]);
+  const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [autoSpeak, setAutoSpeak] = useState(false);
+  const [status, setStatus] = useState<{ llm: boolean; provider: string }>({ llm: false, provider: "?" });
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const tts = useSpeechSynthesis();
+
+  // Busca status do LLM no boot
+  useEffect(() => {
+    fetch(`${API_BASE}/chat/status`).then(r => r.ok ? r.json() : null).then((d) => {
+      if (d) setStatus({ llm: !!d.llm_active, provider: d.provider || "?" });
+    }).catch(() => {});
   }, []);
 
+  // Auto-scroll
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  const handleSpeechResult = useCallback((text: string, isFinal: boolean) => {
+    setInput(text);
+  }, []);
+
+  const speech = useSpeechRecognition(handleSpeechResult);
+
+  // =========================================================================
+  // Upload de arquivo
+  // =========================================================================
+  const handleFile = async (file: File) => {
+    const id = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const type: Attachment["type"] =
+      file.type.startsWith("image/") ? "image" :
+      /\.(xlsx|xls|csv)$/i.test(file.name) ? "spreadsheet" :
+      /\.(txt|md)$/i.test(file.name) ? "text" :
+      /\.(mp3|wav|m4a|ogg)$/i.test(file.name) ? "audio" : "other";
+
+    const preview = type === "image" ? URL.createObjectURL(file) : undefined;
+
+    setAttachments((a) => [...a, { id, file, type, preview, uploading: true }]);
+
+    try {
+      const uploaded = await uploadFile(file);
+      setAttachments((a) =>
+        a.map((att) => (att.id === id ? { ...att, uploaded, uploading: false } : att))
+      );
+    } catch (e: any) {
+      setAttachments((a) =>
+        a.map((att) => (att.id === id ? { ...att, uploading: false, error: e.message } : att))
+      );
+    }
+  };
+
+  const handleFiles = (files: FileList | null) => {
+    if (!files) return;
+    Array.from(files).forEach(handleFile);
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments((a) => a.filter((att) => att.id !== id));
+  };
+
+  // =========================================================================
+  // Envio
+  // =========================================================================
+  const send = async () => {
+    const text = input.trim();
+    if ((!text && attachments.length === 0) || loading) return;
+    if (attachments.some((a) => a.uploading)) {
+      alert("Aguarde o upload terminar");
+      return;
+    }
+
+    setInput("");
+    speech.stop();
+    tts.cancel();
+
+    const userMsg: Msg = {
+      id: `u_${Date.now()}`,
+      role: "user",
+      content: text,
+      attachments: [...attachments],
+      ts: Date.now(),
+    };
+    setMessages((m) => [...m, userMsg]);
+    setAttachments([]);
+
+    setLoading(true);
+    try {
+      const history = messages
+        .filter((m) => m.id !== "welcome")
+        .map((m) => ({ role: m.role, content: m.content }));
+
+      const payload = {
+        message: text,
+        history,
+        attachments: userMsg.attachments
+          ?.filter((a) => a.uploaded)
+          .map((a) => {
+            const u = a.uploaded;
+            return {
+              filename: u.filename,
+              type: u.type,
+              size_bytes: u.size_bytes,
+              mime: u.mime,
+              base64: u.base64,
+              rows: u.rows,
+              columns: u.columns,
+              preview: u.preview,
+              looks_like: u.looks_like,
+              content_preview: u.content_preview,
+            };
+          }),
+      };
+
+      const res = await postJSON<{ reply: string; actions?: any[]; source?: string }>("/chat/", payload);
+
+      const aiMsg: Msg = {
+        id: `a_${Date.now()}`,
+        role: "assistant",
+        content: res.reply,
+        actions: res.actions,
+        source: res.source as any,
+        ts: Date.now(),
+      };
+      setMessages((m) => [...m, aiMsg]);
+
+      if (autoSpeak) {
+        const clean = res.reply.replace(/\*\*?([^*]+)\*\*?/g, "$1");
+        tts.speak(clean);
+      }
+    } catch (e: any) {
+      setMessages((m) => [
+        ...m,
+        {
+          id: `e_${Date.now()}`,
+          role: "assistant",
+          content: `Erro: ${e.message || "Falha na comunicacao com o servidor"}`,
+          ts: Date.now(),
+        },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const clearChat = () => {
+    if (!confirm("Limpar toda a conversa?")) return;
+    setMessages([
+      {
+        id: "welcome",
+        role: "assistant",
+        content: "Conversa limpa. Como posso ajudar?",
+        ts: Date.now(),
+      },
+    ]);
+  };
+
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  };
+
   return (
-    <div className="p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto">
-      <div className="mb-8 pt-10 lg:pt-0">
-        <h1 className="text-2xl font-bold text-kairos-900">Painel Pastoral</h1>
-        <p className="text-slate-500 mt-1">Bem-vindo ao Kairos Igreja</p>
-      </div>
-
-      {loading ? (
-        <div className="text-center py-20 text-slate-400">Carregando...</div>
-      ) : (
-        <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-            <StatCard title="Membros" value={stats.total} icon={Users} />
-            <StatCard title="Congregações" value={stats.congs} icon={Church} />
-            <StatCard title="Aniversariantes hoje" value={stats.aniv} icon={Cake} />
-            <StatCard title="Agenda próxima" value={stats.agenda} icon={Calendar} />
-          </div>
-
-          <div className="grid lg:grid-cols-2 gap-6">
-            <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="font-semibold text-kairos-900">Aniversariantes de hoje</h2>
-                <Link href="/membros" className="text-sm text-kairos-600 hover:underline">Ver todos</Link>
-              </div>
-              {anivList.length === 0 ? (
-                <p className="text-slate-400 text-sm">Nenhum aniversariante hoje.</p>
-              ) : (
-                <ul className="space-y-2">
-                  {anivList.map((a: any) => (
-                    <li key={a.id} className="flex justify-between text-sm py-2 border-b border-slate-100 last:border-0">
-                      <span className="font-medium">{a.nome}</span>
-                      <span className="text-slate-400">{a.whatsapp || "—"}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
+    <div className="flex flex-col h-screen bg-gradient-to-b from-slate-50 to-white">
+      {/* Header */}
+      <header className="border-b border-slate-200 bg-white px-4 py-3 shadow-sm">
+        <div className="max-w-3xl mx-auto flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-full bg-kairos-700 text-white shadow">
+              <Bot size={22} />
             </div>
-
-            <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="font-semibold text-kairos-900">Próximos compromissos</h2>
-                <Link href="/agenda" className="text-sm text-kairos-600 hover:underline">Agenda</Link>
-              </div>
-              {proximos.length === 0 ? (
-                <p className="text-slate-400 text-sm">Nenhum compromisso próximo.</p>
-              ) : (
-                <ul className="space-y-2">
-                  {proximos.map((a: any) => (
-                    <li key={a.id} className="text-sm py-2 border-b border-slate-100 last:border-0">
-                      <p className="font-medium">{a.titulo}</p>
-                      <p className="text-slate-400 text-xs mt-0.5">
-                        {new Date(a.data_hora).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              )}
+            <div>
+              <h1 className="font-bold text-kairos-900 text-lg leading-tight">Kairos Igreja</h1>
+              <p className="text-xs text-slate-500">
+                {status.llm
+                  ? <span className="text-emerald-600">LLM ativo ({status.provider})</span>
+                  : <span className="text-amber-600">Modo regras (sem LLM)</span>
+                }
+              </p>
             </div>
           </div>
-
-          <div className="mt-8 bg-gradient-to-r from-kairos-900 to-kairos-700 rounded-xl p-6 text-white">
-            <h2 className="font-semibold text-lg mb-2">Fale com o Kairos</h2>
-            <p className="text-kairos-100 text-sm mb-4">
-              Pergunte quantos membros temos, quem faz aniversário, busque um membro ou crie um lembrete.
-            </p>
-            <Link
-              href="/chat"
-              className="inline-flex items-center gap-2 bg-white text-kairos-900 px-4 py-2 rounded-lg text-sm font-medium hover:bg-kairos-50 transition"
+          <div className="flex items-center gap-1">
+            {tts.supported && (
+              <button
+                onClick={() => setAutoSpeak((s) => !s)}
+                className={`p-2 rounded-lg transition ${autoSpeak ? "bg-kairos-100 text-kairos-700" : "text-slate-400 hover:bg-slate-100"}`}
+                title={autoSpeak ? "Voz ligada" : "Voz desligada"}
+              >
+                {autoSpeak ? <Volume2 size={18} /> : <VolumeX size={18} />}
+              </button>
+            )}
+            <button
+              onClick={clearChat}
+              className="p-2 text-slate-400 hover:bg-slate-100 rounded-lg"
+              title="Limpar conversa"
             >
-              Abrir Chat
-            </Link>
+              <Trash2 size={18} />
+            </button>
           </div>
-        </>
-      )}
+        </div>
+      </header>
+
+      {/* Messages */}
+      <main className="flex-1 overflow-y-auto px-4 py-6">
+        <div className="max-w-3xl mx-auto space-y-4">
+          {messages.map((m) => (
+            <div key={m.id} className={`flex gap-3 ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+              {m.role === "assistant" && (
+                <div className="shrink-0 w-8 h-8 rounded-full bg-kairos-700 text-white flex items-center justify-center shadow">
+                  <Bot size={16} />
+                </div>
+              )}
+              <div
+                className={`max-w-[80%] rounded-2xl px-4 py-2.5 shadow-sm ${
+                  m.role === "user"
+                    ? "bg-kairos-700 text-white"
+                    : "bg-white border border-slate-200 text-slate-800"
+                }`}
+              >
+                {m.attachments && m.attachments.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {m.attachments.map((a) => (
+                      <div key={a.id} className="rounded-lg overflow-hidden bg-black/10">
+                        {a.type === "image" && a.preview && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={a.preview} alt={a.file.name} className="max-h-32 max-w-[200px]" />
+                        )}
+                        {a.type !== "image" && (
+                          <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs">
+                            {a.type === "spreadsheet" ? <FileText size={14} /> : <ImageIcon size={14} />}
+                            <span className="truncate max-w-[160px]">{a.file.name}</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="text-sm whitespace-pre-wrap leading-relaxed">
+                  {renderMarkdown(m.content)}
+                </div>
+                {m.actions && m.actions.length > 0 && (
+                  <details className="mt-2 text-xs opacity-70">
+                    <summary className="cursor-pointer">acoes executadas ({m.actions.length})</summary>
+                    <pre className="mt-1 p-2 rounded bg-black/5 overflow-x-auto">
+                      {JSON.stringify(m.actions, null, 2)}
+                    </pre>
+                  </details>
+                )}
+                {m.source && (
+                  <div className="mt-1 text-[10px] opacity-50">
+                    via {m.source}
+                  </div>
+                )}
+              </div>
+              {m.role === "user" && (
+                <div className="shrink-0 w-8 h-8 rounded-full bg-slate-200 text-slate-600 flex items-center justify-center">
+                  <User size={16} />
+                </div>
+              )}
+            </div>
+          ))}
+          {loading && (
+            <div className="flex gap-3">
+              <div className="shrink-0 w-8 h-8 rounded-full bg-kairos-700 text-white flex items-center justify-center">
+                <Bot size={16} />
+              </div>
+              <div className="rounded-2xl px-4 py-3 bg-white border border-slate-200">
+                <div className="flex gap-1">
+                  <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                  <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                  <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                </div>
+              </div>
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+      </main>
+
+      {/* Input */}
+      <footer className="border-t border-slate-200 bg-white p-3">
+        <div className="max-w-3xl mx-auto">
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-2">
+              {attachments.map((a) => (
+                <div key={a.id} className="flex items-center gap-2 px-2.5 py-1.5 bg-slate-100 rounded-lg text-xs">
+                  {a.type === "image" && a.preview ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={a.preview} alt="" className="w-8 h-8 object-cover rounded" />
+                  ) : a.type === "spreadsheet" ? (
+                    <FileText size={16} className="text-emerald-600" />
+                  ) : (
+                    <ImageIcon size={16} className="text-slate-500" />
+                  )}
+                  <span className="truncate max-w-[120px]">{a.file.name}</span>
+                  {a.uploading && <Loader2 size={12} className="animate-spin" />}
+                  {a.error && <span className="text-red-600">!</span>}
+                  <button onClick={() => removeAttachment(a.id)} className="text-slate-500 hover:text-red-600">
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex items-end gap-2">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="p-2.5 text-slate-500 hover:bg-slate-100 rounded-xl"
+              title="Anexar arquivo"
+              disabled={loading}
+            >
+              <Paperclip size={20} />
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*,.xlsx,.xls,.csv,.txt,.md,.pdf"
+              className="hidden"
+              onChange={(e) => {
+                handleFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+
+            {speech.supported && (
+              <button
+                onClick={speech.listening ? speech.stop : speech.start}
+                className={`p-2.5 rounded-xl transition ${
+                  speech.listening
+                    ? "bg-red-500 text-white animate-pulse"
+                    : "text-slate-500 hover:bg-slate-100"
+                }`}
+                title={speech.listening ? "Parar gravacao" : "Falar"}
+                disabled={loading}
+              >
+                {speech.listening ? <MicOff size={20} /> : <Mic size={20} />}
+              </button>
+            )}
+
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={onKey}
+              placeholder={speech.listening ? "Ouvindo..." : "Digite, fale ou anexe um arquivo..."}
+              rows={1}
+              disabled={loading}
+              className="flex-1 px-4 py-2.5 border border-slate-200 rounded-xl text-sm resize-none focus:outline-none focus:ring-2 focus:ring-kairos-500 max-h-32 disabled:opacity-50"
+              style={{ minHeight: "44px" }}
+              onInput={(e) => {
+                const t = e.currentTarget;
+                t.style.height = "auto";
+                t.style.height = Math.min(t.scrollHeight, 128) + "px";
+              }}
+            />
+
+            <button
+              onClick={send}
+              disabled={loading || (!input.trim() && attachments.length === 0)}
+              className="p-2.5 bg-kairos-700 text-white rounded-xl hover:bg-kairos-800 disabled:opacity-40 transition"
+              title="Enviar"
+            >
+              {loading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
+            </button>
+          </div>
+
+          <p className="text-[10px] text-slate-400 text-center mt-1.5">
+            Kairos Igreja - MVP - {new Date().getFullYear()}
+          </p>
+        </div>
+      </footer>
     </div>
   );
 }

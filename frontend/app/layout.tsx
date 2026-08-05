@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import { Sidebar } from "@/components/Sidebar";
 
 export const metadata: Metadata = {
   title: "Kairos Igreja",
@@ -26,11 +25,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <link rel="apple-touch-icon" href="/icon-192.png" />
       </head>
-      <body className="min-h-screen flex">
-        <Sidebar />
-        <main className="flex-1 min-h-screen overflow-auto">
-          {children}
-        </main>
+      <body className="min-h-screen bg-slate-50">
+        {children}
       </body>
     </html>
   );

@@ -14,11 +14,11 @@ from app.models.agenda import AgendaItem
 from app.models.patrimonio import Patrimonio
 from app.services.llm_service import LLMConfig, chat_with_llm
 
-def process_message(message: str, db: Session, history: list | None = None) -> dict:
+def process_message(message: str, db: Session, history: list | None = None, attachments: list | None = None) -> dict:
     # Tenta LLM primeiro (se configurado)
     cfg = LLMConfig.from_env()
     if cfg.is_configured and cfg.provider != "rules":
-        llm_result = chat_with_llm(cfg, message, history, db)
+        llm_result = chat_with_llm(cfg, message, history, db, attachments=attachments)
         if llm_result.get("text"):
             return {
                 "reply": llm_result["text"],
