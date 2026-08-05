@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --kairos-primary: #1a365d;
+  --kairos-accent: #2b6cb0;
+}
+
+body {
+  @apply bg-slate-50 text-slate-800 antialiased;
+}
+
+/* Scrollbar suave */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-slate-100;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 rounded-full;
+}
+
+/* Chat bubbles */
+.chat-user {
+  @apply bg-kairos-700 text-white rounded-2xl rounded-br-md px-4 py-2.5 max-w-[85%] ml-auto;
+}
+.chat-assistant {
+  @apply bg-white border border-slate-200 text-slate-800 rounded-2xl rounded-bl-md px-4 py-2.5 max-w-[85%] shadow-sm;
+}
+
+/* Markdown simples no chat */
+.chat-assistant strong {
+  @apply font-semibold text-kairos-800;
+}
