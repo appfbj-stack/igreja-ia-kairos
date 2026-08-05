@@ -1,6 +1,9 @@
 """
 Chat Kairos - Assistente pastoral com interpretação de comandos.
-Em produção, substituir por chamada real à MiniMax M3 (ou outra LLM) com function calling.
+
+Ordem de execucao:
+  1) Se LLM_PROVIDER estiver configurado e != "rules" → chama LLM com tools
+  2) Caso contrario → usa o motor de regras local (este arquivo)
 """
 import re
 from datetime import datetime, date, timedelta
@@ -9,8 +12,22 @@ from app.models.member import Member
 from app.models.congregation import Congregation
 from app.models.agenda import AgendaItem
 from app.models.patrimonio import Patrimonio
+from app.services.llm_service import LLMConfig, chat_with_llm
 
-def process_message(message: str, db: Session) -> dict:
+def process_message(message: str, db: Session, history: list | None = None) -> dict:
+    # Tenta LLM primeiro (se configurado)
+    cfg = LLMConfig.from_env()
+    if cfg.is_configured and cfg.provider != "rules":
+        llm_result = chat_with_llm(cfg, message, history, db)
+        if llm_result.get("text"):
+            return {
+                "reply": llm_result["text"],
+                "actions": llm_result.get("actions"),
+                "data": None,
+                "source": "llm",
+            }
+        # Se LLM falhou, cai pra regras
+    # Fallback: motor de regras
     msg = message.strip().lower()
     
     # --- Contagem de membros ---
