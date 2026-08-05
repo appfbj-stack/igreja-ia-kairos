@@ -22,4 +22,4 @@ faster-whisper==1.0.3
 # requests = dependencia do faster-whisper p/ download do modelo
 requests==2.32.3
 # edge-tts = TTS usando Microsoft Edge (sem chave, boa qualidade)
-edge-tts==6.1.20  # versao mais nova com tokens atualizados
+edge-tts>=6.1.19  # 6.1.19+ tem os tokens do Microsoft atualizados
