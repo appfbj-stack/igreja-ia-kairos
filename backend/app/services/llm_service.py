@@ -46,6 +46,11 @@ class LLMConfig:
             cfg.api_key = os.getenv("LLM_API_KEY", "")
             cfg.model = os.getenv("LLM_MODEL", "MiniMax/M3")
             cfg.base_url = os.getenv("LLM_BASE_URL", "https://api.MiniMax.chat/v1")
+        elif provider == "minimax":
+            # alias do MiniMax M3 (a empresa)
+            cfg.api_key = os.getenv("LLM_API_KEY", "")
+            cfg.model = os.getenv("LLM_MODEL", "MiniMax/M3")
+            cfg.base_url = os.getenv("LLM_BASE_URL", "https://api.MiniMax.chat/v1")
         elif provider == "deepseek":
             cfg.api_key = os.getenv("LLM_API_KEY", "")
             cfg.model = os.getenv("LLM_MODEL", "deepseek-chat")
