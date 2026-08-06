@@ -7,12 +7,16 @@ import os
 from app.database import init_db, SessionLocal
 from app.models.congregation import Congregation
 from app.models.user import User
-from app.routers import members, congregations, agenda, pdfs, chat, import_export, backup, upload, transcribe, tts
+from app.services.auth_service import hash_password
+from app.routers import (
+    members, congregations, agenda, pdfs, chat, import_export,
+    backup, upload, transcribe, tts, auth,
+)
 
 app = FastAPI(
     title="Kairos Igreja",
-    description="Sistema inteligente de gestão pastoral com assistente por chat",
-    version="1.0.0-mvp"
+    description="Sistema inteligente de gestao pastoral com assistente por chat",
+    version="1.0.0-mvp",
 )
 
 app.add_middleware(
@@ -30,6 +34,7 @@ os.makedirs(os.path.join(UPLOAD_DIR, "members"), exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # Routers
+app.include_router(auth.router, prefix="/api")
 app.include_router(members.router, prefix="/api")
 app.include_router(congregations.router, prefix="/api")
 app.include_router(agenda.router, prefix="/api")
@@ -41,25 +46,65 @@ app.include_router(upload.router, prefix="/api")
 app.include_router(transcribe.router, prefix="/api")
 app.include_router(tts.router, prefix="/api")
 
-@app.on_event("startup")
-def on_startup():
-    init_db()
-    # Seed inicial
+
+def _seed():
+    """Cria dados iniciais: congregacoes + usuarios padrao."""
     db = SessionLocal()
     try:
+        # Congregacoes
         if db.query(Congregation).count() == 0:
             sede = Congregation(
                 nome="Sede",
-                endereco="Endereço da Sede",
+                endereco="Endereco da Sede",
                 dirigente="Pastor Presidente",
-                telefone=""
+                telefone="",
             )
             db.add(sede)
-            db.add(Congregation(nome="Congregação Exemplo", endereco="", dirigente="", telefone=""))
+            db.flush()
+            sede_id = sede.id
+            db.add(Congregation(nome="Congregacao Norte", endereco="", dirigente="", telefone=""))
+            db.add(Congregation(nome="Congregacao Sul", endereco="", dirigente="", telefone=""))
             db.commit()
-            print("✅ Congregações iniciais criadas")
+            print("OK Congregacoes iniciais criadas")
+        else:
+            sede = db.query(Congregation).filter(Congregation.nome == "Sede").first()
+            sede_id = sede.id if sede else None
+
+        # Usuarios padrao
+        if db.query(User).count() == 0 and sede_id:
+            defaults = [
+                {"username": "pastor", "nome": "Pastor Presidente", "password": "pastor123", "role": "pastor", "congregacao_id": None},
+                {"username": "dirigente.sede", "nome": "Dirigente da Sede", "password": "dirigente123", "role": "dirigente", "congregacao_id": sede_id},
+            ]
+            # Pega as outras congregacoes
+            outras = db.query(Congregation).filter(Congregation.nome != "Sede").all()
+            for i, c in enumerate(outras, start=1):
+                defaults.append({
+                    "username": f"dirigente.norte" if i == 1 else f"dirigente.sul",
+                    "nome": f"Dirigente {c.nome}",
+                    "password": "dirigente123",
+                    "role": "dirigente",
+                    "congregacao_id": c.id,
+                })
+            for u in defaults:
+                db.add(User(
+                    username=u["username"],
+                    nome=u["nome"],
+                    hashed_password=hash_password(u["password"]),
+                    role=u["role"],
+                    congregacao_id=u["congregacao_id"],
+                ))
+            db.commit()
+            print(f"OK {len(defaults)} usuarios padrao criados")
     finally:
         db.close()
+
+
+@app.on_event("startup")
+def on_startup():
+    init_db()
+    _seed()
+
 
 @app.get("/")
 def root():
@@ -67,12 +112,14 @@ def root():
         "app": "Kairos Igreja",
         "version": "1.0.0-mvp",
         "docs": "/docs",
-        "status": "online"
+        "status": "online",
     }
+
 
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
 
 if __name__ == "__main__":
     import uvicorn

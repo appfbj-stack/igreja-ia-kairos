@@ -4,6 +4,7 @@ from app.database import get_db
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.services.chat_service import process_message
 from app.services.llm_service import LLMConfig
+from app.services.auth_service import get_current_user, CurrentUser
 
 router = APIRouter(prefix="/chat", tags=["Chat IA"])
 
@@ -18,9 +19,13 @@ def chat_status():
     }
 
 @router.post("/", response_model=ChatResponse)
-def chat(req: ChatRequest, db: Session = Depends(get_db)):
+def chat(
+    req: ChatRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
     history = [h.model_dump() for h in (req.history or [])]
-    result = process_message(req.message, db, history=history, attachments=req.attachments)
+    result = process_message(req.message, db, history=history, attachments=req.attachments, user=user)
     return ChatResponse(
         reply=result.get("reply", ""),
         actions=result.get("actions"),

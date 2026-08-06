@@ -1,7 +1,9 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Mic, MicOff, Paperclip, Volume2, VolumeX, Loader2, Bot, User, FileText, Image as ImageIcon, X, Trash2, AudioLines, Download } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Send, Mic, MicOff, Paperclip, Volume2, VolumeX, Loader2, Bot, User as UserIcon, FileText, Image as ImageIcon, X, Trash2, AudioLines, Download, LogOut } from "lucide-react";
+import { getToken, getUser, clearAuth, authHeaders, type User } from "@/lib/auth";
 
 // =========================================================================
 // Tipos
@@ -34,10 +36,14 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://igrejak.fbautomacao
 async function postJSON<T>(path: string, body: any): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      clearAuth();
+      if (typeof window !== "undefined") window.location.href = "/login";
+    }
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || "Erro na requisição");
   }
@@ -47,7 +53,7 @@ async function postJSON<T>(path: string, body: any): Promise<T> {
 async function uploadFile(file: File): Promise<any> {
   const fd = new FormData();
   fd.append("file", file);
-  const res = await fetch(`${API_BASE}/upload/`, { method: "POST", body: fd });
+  const res = await fetch(`${API_BASE}/upload/`, { method: "POST", body: fd, headers: authHeaders() });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || "Erro no upload");
@@ -58,7 +64,7 @@ async function uploadFile(file: File): Promise<any> {
 async function transcribeAudio(file: File): Promise<{ text: string; language: string; duration: number }> {
   const fd = new FormData();
   fd.append("file", file);
-  const res = await fetch(`${API_BASE}/transcribe/`, { method: "POST", body: fd });
+  const res = await fetch(`${API_BASE}/transcribe/`, { method: "POST", body: fd, headers: authHeaders() });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || "Erro na transcricao");
@@ -328,12 +334,43 @@ function useInstallPrompt() {
 // Componente principal
 // =========================================================================
 export default function ChatPage() {
+  const router = useRouter();
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  // Verifica auth no boot
+  useEffect(() => {
+    const token = getToken();
+    const u = getUser();
+    if (!token || !u) {
+      router.replace("/login");
+      return;
+    }
+    setCurrentUser(u);
+    setAuthChecked(true);
+  }, [router]);
+
+  if (!authChecked || !currentUser) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <Loader2 className="animate-spin text-kairos-700" size={32} />
+      </div>
+    );
+  }
+
+  const logout = () => {
+    clearAuth();
+    router.replace("/login");
+  };
+
   const [messages, setMessages] = useState<Msg[]>([
     {
       id: "welcome",
       role: "assistant",
       content:
-        "🙏 **Ola! Eu sou o Kairos**, seu assistente pastoral.\n\nPosso cadastrar membros, buscar aniversariantes, criar lembretes, responder perguntas sobre a igreja - tudo por aqui.\n\nVoce pode **digitar** ou **falar** (icone do microfone). Tambem pode enviar fotos de membros ou planilhas Excel pra eu processar.",
+        currentUser.role === "pastor"
+          ? `🙏 **Ola, pastor!** Eu sou o Kairos, seu assistente pastoral.\n\nPosso cadastrar membros, buscar aniversariantes, criar lembretes, responder perguntas sobre a igreja - tudo por aqui.\n\nComo voce e o pastor (sede), voce ve e gerencia **todas as congregacoes**.\n\nVoce pode **digitar** ou **falar** (icone do microfone). Tambem pode enviar fotos ou planilhas Excel pra eu processar.`
+          : `🙏 **Ola, ${currentUser.nome.split(" ")[0]}!** Eu sou o Kairos, seu assistente pastoral.\n\nPosso ajudar voce a gerenciar os membros, agenda, patrimonio e tudo mais da **${currentUser.congregacao_nome || "sua congregacao"}**.\n\nVoce pode **digitar** ou **falar** (icone do microfone). Tambem pode enviar fotos ou planilhas Excel pra eu processar.`,
       ts: Date.now(),
     },
   ]);
@@ -349,10 +386,11 @@ export default function ChatPage() {
 
   // Busca status do LLM no boot
   useEffect(() => {
-    fetch(`${API_BASE}/chat/status`).then(r => r.ok ? r.json() : null).then((d) => {
+    if (!authChecked) return;
+    fetch(`${API_BASE}/chat/status`, { headers: authHeaders() }).then(r => r.ok ? r.json() : null).then((d) => {
       if (d) setStatus({ llm: !!d.llm_active, provider: d.provider || "?" });
     }).catch(() => {});
-  }, []);
+  }, [authChecked]);
 
   // Auto-scroll
   useEffect(() => {
@@ -542,6 +580,19 @@ export default function ChatPage() {
             </div>
           </div>
           <div className="flex items-center gap-1">
+            <div className="hidden sm:flex flex-col items-end mr-2 leading-tight">
+              <span className="text-xs font-semibold text-kairos-900">{currentUser.nome}</span>
+              <span className="text-[10px] text-slate-500">
+                {currentUser.role === "pastor" ? "Pastor (sede)" : currentUser.congregacao_nome}
+              </span>
+            </div>
+            <button
+              onClick={logout}
+              className="p-2 text-slate-400 hover:bg-red-50 hover:text-red-600 rounded-lg"
+              title="Sair"
+            >
+              <LogOut size={18} />
+            </button>
             {install.canInstall && (
               <button
                 onClick={() => install.prompt()}
@@ -634,7 +685,7 @@ export default function ChatPage() {
               </div>
               {m.role === "user" && (
                 <div className="shrink-0 w-8 h-8 rounded-full bg-slate-200 text-slate-600 flex items-center justify-center">
-                  <User size={16} />
+                  <UserIcon size={16} />
                 </div>
               )}
             </div>

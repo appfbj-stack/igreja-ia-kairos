@@ -359,27 +359,53 @@ TOOLS: list[dict] = [
 # ---------------------------------------------------------------------------
 # Executor de tools — chama o DB direto
 # ---------------------------------------------------------------------------
-def execute_tool(name: str, arguments: dict, db) -> dict:
-    """Roda a tool no banco. Retorna dict pronto pra mandar de volta pro LLM."""
+def execute_tool(name: str, arguments: dict, db, user=None) -> dict:
+    """Roda a tool no banco. Retorna dict pronto pra mandar de volta pro LLM.
+    Se user e fornecido, respeita escopo (pastor ve tudo, dirigente so a dele)."""
     from datetime import datetime, date, timedelta
     from app.models.member import Member
     from app.models.congregation import Congregation
     from app.models.agenda import AgendaItem
     from app.models.patrimonio import Patrimonio
 
+    # Helper de escopo
+    def scope_member(q):
+        if user is None or getattr(user, "is_pastor", False):
+            return q
+        if user.congregacao_id is not None:
+            return q.filter(Member.congregacao_id == user.congregacao_id)
+        return q
+
+    def scope_patrimonio(q):
+        if user is None or getattr(user, "is_pastor", False):
+            return q
+        if user.congregacao_id is not None:
+            return q.filter(Patrimonio.congregacao_id == user.congregacao_id)
+        return q
+
+    def scope_congregation_list(q):
+        # Pastor ve todas; dirigente ve so a dele
+        if user is None or getattr(user, "is_pastor", False):
+            return q
+        if user.congregacao_id is not None:
+            return q.filter(Congregation.id == user.congregacao_id)
+        return q
+
     try:
         if name == "contar_membros":
-            total = db.query(Member).filter(Member.ativo == True).count()
-            obreiros = db.query(Member).filter(Member.ativo == True, Member.eh_obreiro == True).count()
-            congs = db.query(Congregation).filter(Congregation.ativa == True).count()
+            q = scope_member(db.query(Member).filter(Member.ativo == True))
+            total = q.count()
+            obreiros = q.filter(Member.eh_obreiro == True).count()
+            congs_q = scope_congregation_list(db.query(Congregation).filter(Congregation.ativa == True))
+            congs = congs_q.count()
             return {"total_membros": total, "total_obreiros": obreiros, "total_congregacoes": congs}
 
         if name == "listar_aniversariantes":
             periodo = arguments.get("periodo", "dia")
             hoje = date.today()
-            members = db.query(Member).filter(
+            members = scope_member(db.query(Member).filter(
                 Member.ativo == True, Member.data_nascimento.isnot(None)
-            ).all()
+            )).all()
             lista = []
             for m in members:
                 aniv = m.data_nascimento.replace(year=hoje.year)
@@ -397,9 +423,9 @@ def execute_tool(name: str, arguments: dict, db) -> dict:
             nome = arguments.get("nome", "").strip()
             if not nome:
                 return {"erro": "nome vazio"}
-            members = db.query(Member).filter(
+            members = scope_member(db.query(Member).filter(
                 Member.ativo == True, Member.nome_completo.ilike(f"%{nome}%")
-            ).limit(5).all()
+            )).limit(5).all()
             return {
                 "quantidade": len(members),
                 "membros": [
@@ -415,7 +441,7 @@ def execute_tool(name: str, arguments: dict, db) -> dict:
             }
 
         if name == "listar_congregacoes":
-            congs = db.query(Congregation).filter(Congregation.ativa == True).all()
+            congs = scope_congregation_list(db.query(Congregation).filter(Congregation.ativa == True)).all()
             return {
                 "congregacoes": [
                     {
@@ -476,7 +502,7 @@ def execute_tool(name: str, arguments: dict, db) -> dict:
             }
 
         if name == "listar_patrimonio":
-            items = db.query(Patrimonio).filter(Patrimonio.ativo == True).limit(50).all()
+            items = scope_patrimonio(db.query(Patrimonio).filter(Patrimonio.ativo == True)).limit(50).all()
             return {
                 "quantidade": len(items),
                 "itens": [
@@ -572,7 +598,13 @@ def execute_tool(name: str, arguments: dict, db) -> dict:
             limite = arguments.get("limite") or 50
             if not cong_nome:
                 return {"erro": "informe a congregacao"}
-            c = db.query(Congregation).filter(Congregation.nome.ilike(f"%{cong_nome}%")).first()
+            # Se o usuario nao for pastor, so pode ver a propria congregacao
+            if user is not None and not getattr(user, "is_pastor", False):
+                if user.congregacao_id is None:
+                    return {"erro": "Voce nao esta vinculado a uma congregacao"}
+                c = db.query(Congregation).filter(Congregation.id == user.congregacao_id).first()
+            else:
+                c = db.query(Congregation).filter(Congregation.nome.ilike(f"%{cong_nome}%")).first()
             if not c:
                 return {"erro": f"congregacao '{cong_nome}' nao encontrada"}
             members = db.query(Member).filter(
@@ -589,7 +621,7 @@ def execute_tool(name: str, arguments: dict, db) -> dict:
 
         if name == "listar_obreiros":
             cong_nome = arguments.get("congregacao")
-            q = db.query(Member).filter(Member.ativo == True, Member.eh_obreiro == True)
+            q = scope_member(db.query(Member).filter(Member.ativo == True, Member.eh_obreiro == True))
             if cong_nome:
                 c = db.query(Congregation).filter(Congregation.nome.ilike(f"%{cong_nome}%")).first()
                 if not c:
@@ -839,19 +871,34 @@ def chat_with_llm(
     history: list[dict] | None,
     db,
     attachments: list[dict] | None = None,
+    user=None,
 ) -> dict:
     """
     Faz o ciclo completo de chat com LLM:
-    1) monta historico + system prompt
+    1) monta historico + system prompt (com escopo do usuario)
     2) chama o provedor com tools (suporta anexos: imagem, planilha, texto)
-    3) se LLM pedir tool → executa → devolve resultado → pede resposta final
+    3) se LLM pedir tool → executa (respeitando escopo) → devolve resultado → pede resposta final
     4) retorna texto final
     """
     if cfg.provider == "rules" or not cfg.is_configured:
         return {"text": "", "used_llm": False}
 
+    # Injeta escopo do usuario no system prompt
+    scope_info = ""
+    if user is not None:
+        if getattr(user, "is_pastor", False):
+            scope_info = "\n\nVoce esta conversando com o PASTOR (sede). Ele ve TODAS as congregacoes e pode gerenciar tudo. Sempre que ele pedir info ou acao, execute em escopo amplo (todas as congregacoes)."
+        else:
+            nome_cong = getattr(user, "congregacao_nome", None) or "(sem congregacao)"
+            scope_info = (
+                f"\n\nVoce esta conversando com o(a) dirigente/secretaria da congregacao '{nome_cong}'."
+                f" Por seguranca, suas acoes e consultas estao LIMITADAS a essa congregacao."
+                f" NUNCA mencione ou sugira dados de outras congregacoes."
+            )
+
+    system_prompt = cfg.system_prompt + scope_info
     history = history or []
-    messages: list[dict] = [{"role": "system", "content": cfg.system_prompt}]
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
     for h in history[-10:]:  # limita contexto
         role = h.get("role")
         content = h.get("content")
@@ -889,7 +936,7 @@ def chat_with_llm(
                 args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
             except Exception:
                 args = {}
-            tool_result = execute_tool(name, args, db)
+            tool_result = execute_tool(name, args, db, user=user)
             actions.append({"tool": name, "args": args, "result": tool_result})
             messages.append({
                 "role": "tool",
