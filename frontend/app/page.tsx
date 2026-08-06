@@ -348,6 +348,18 @@ export default function ChatPage() {
     }
     setCurrentUser(u);
     setAuthChecked(true);
+    // Atualiza a welcome message com nome do usuario
+    setMessages((m) => [
+      {
+        id: "welcome",
+        role: "assistant",
+        content:
+          u.role === "pastor"
+            ? `🙏 **Ola, pastor!** Eu sou o Kairos, seu assistente pastoral.\n\nPosso cadastrar membros, buscar aniversariantes, criar lembretes, responder perguntas sobre a igreja - tudo por aqui.\n\nComo voce e o pastor (sede), voce ve e gerencia **todas as congregacoes**.\n\nVoce pode **digitar** ou **falar** (icone do microfone). Tambem pode enviar fotos ou planilhas Excel pra eu processar.`
+            : `🙏 **Ola, ${u.nome.split(" ")[0]}!** Eu sou o Kairos, seu assistente pastoral.\n\nPosso ajudar voce a gerenciar os membros, agenda, patrimonio e tudo mais da **${u.congregacao_nome || "sua congregacao"}**.\n\nVoce pode **digitar** ou **falar** (icone do microfone). Tambem pode enviar fotos ou planilhas Excel pra eu processar.`,
+        ts: Date.now(),
+      },
+    ]);
   }, [router]);
 
   if (!authChecked || !currentUser) {
@@ -367,10 +379,7 @@ export default function ChatPage() {
     {
       id: "welcome",
       role: "assistant",
-      content:
-        currentUser.role === "pastor"
-          ? `🙏 **Ola, pastor!** Eu sou o Kairos, seu assistente pastoral.\n\nPosso cadastrar membros, buscar aniversariantes, criar lembretes, responder perguntas sobre a igreja - tudo por aqui.\n\nComo voce e o pastor (sede), voce ve e gerencia **todas as congregacoes**.\n\nVoce pode **digitar** ou **falar** (icone do microfone). Tambem pode enviar fotos ou planilhas Excel pra eu processar.`
-          : `🙏 **Ola, ${currentUser.nome.split(" ")[0]}!** Eu sou o Kairos, seu assistente pastoral.\n\nPosso ajudar voce a gerenciar os membros, agenda, patrimonio e tudo mais da **${currentUser.congregacao_nome || "sua congregacao"}**.\n\nVoce pode **digitar** ou **falar** (icone do microfone). Tambem pode enviar fotos ou planilhas Excel pra eu processar.`,
+      content: "🙏 Ola! Eu sou o Kairos, seu assistente pastoral.",
       ts: Date.now(),
     },
   ]);
