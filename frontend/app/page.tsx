@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Mic, MicOff, Paperclip, Volume2, VolumeX, Loader2, Bot, User, FileText, Image as ImageIcon, X, Trash2, AudioLines } from "lucide-react";
+import { Send, Mic, MicOff, Paperclip, Volume2, VolumeX, Loader2, Bot, User, FileText, Image as ImageIcon, X, Trash2, AudioLines, Download } from "lucide-react";
 
 // =========================================================================
 // Tipos
@@ -289,6 +289,42 @@ function renderMarkdown(text: string) {
 }
 
 // =========================================================================
+// PWA install prompt hook
+// =========================================================================
+function useInstallPrompt() {
+  const [deferred, setDeferred] = useState<any>(null);
+  const [installed, setInstalled] = useState(false);
+
+  useEffect(() => {
+    const handler = (e: any) => {
+      e.preventDefault();
+      setDeferred(e);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    const onInstalled = () => setInstalled(true);
+    window.addEventListener("appinstalled", onInstalled);
+    // Detecta se ja esta instalado (standalone)
+    if (window.matchMedia("(display-mode: standalone)").matches) {
+      setInstalled(true);
+    }
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handler);
+      window.removeEventListener("appinstalled", onInstalled);
+    };
+  }, []);
+
+  const prompt = useCallback(async () => {
+    if (!deferred) return false;
+    deferred.prompt();
+    const { outcome } = await deferred.userChoice;
+    setDeferred(null);
+    return outcome === "accepted";
+  }, [deferred]);
+
+  return { canInstall: !!deferred, installed, prompt };
+}
+
+// =========================================================================
 // Componente principal
 // =========================================================================
 export default function ChatPage() {
@@ -344,6 +380,8 @@ export default function ChatPage() {
 
   // Audio element ref para TTS server-side
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const install = useInstallPrompt();
 
   // =========================================================================
   // Upload de arquivo
@@ -504,6 +542,24 @@ export default function ChatPage() {
             </div>
           </div>
           <div className="flex items-center gap-1">
+            {install.canInstall && (
+              <button
+                onClick={() => install.prompt()}
+                className="p-2 rounded-lg text-kairos-700 hover:bg-kairos-50 transition flex items-center gap-1"
+                title="Instalar como app no celular/computador"
+              >
+                <Download size={18} />
+                <span className="text-xs font-medium hidden sm:inline">Instalar</span>
+              </button>
+            )}
+            {install.installed && (
+              <span
+                className="p-2 text-emerald-600"
+                title="App instalado"
+              >
+                <Download size={18} />
+              </span>
+            )}
             {tts.supported && (
               <button
                 onClick={() => setAutoSpeak((s) => !s)}
