@@ -590,9 +590,9 @@ export default function ChatPage() {
           </div>
           <div className="flex items-center gap-1">
             <div className="hidden sm:flex flex-col items-end mr-2 leading-tight">
-              <span className="text-xs font-semibold text-kairos-900">{currentUser.nome}</span>
+              <span className="text-xs font-semibold text-kairos-900">{currentUser?.nome}</span>
               <span className="text-[10px] text-slate-500">
-                {currentUser.role === "pastor" ? "Pastor (sede)" : currentUser.congregacao_nome}
+                {currentUser?.role === "pastor" ? "Pastor (sede)" : currentUser?.congregacao_nome}
               </span>
             </div>
             <button
