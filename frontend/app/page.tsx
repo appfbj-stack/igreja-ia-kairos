@@ -335,10 +335,64 @@ function useInstallPrompt() {
 // =========================================================================
 export default function ChatPage() {
   const router = useRouter();
+
+  // =========================================================================
+  // 1. TODOS os useState PRIMEIRO (ordem obrigatoria do React)
+  // =========================================================================
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [messages, setMessages] = useState<Msg[]>([
+    {
+      id: "welcome",
+      role: "assistant",
+      content: "🙏 Ola! Eu sou o Kairos, seu assistente pastoral.",
+      ts: Date.now(),
+    },
+  ]);
+  const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [autoSpeak, setAutoSpeak] = useState(false);
+  const [status, setStatus] = useState<{ llm: boolean; provider: string }>({ llm: false, provider: "?" });
 
-  // Verifica auth no boot
+  // =========================================================================
+  // 2. useRef
+  // =========================================================================
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // =========================================================================
+  // 3. Custom hooks (tts, speech, mediaRec, install) - precisam dos callbacks antes
+  // =========================================================================
+  const tts = useSpeechSynthesis();
+
+  const handleSpeechResult = useCallback((text: string, _isFinal: boolean) => {
+    setInput(text);
+  }, []);
+
+  const speech = useSpeechRecognition(handleSpeechResult);
+
+  const handleMediaTranscript = useCallback((text: string) => {
+    setInput((prev) => (prev ? prev + " " + text : text));
+  }, []);
+
+  const mediaRec = useMediaRecorder(handleMediaTranscript);
+
+  const install = useInstallPrompt();
+
+  // Decide qual STT usar
+  const sttMode: "browser" | "server" | "none" = speech.supported
+    ? "browser"
+    : mediaRec.supported
+    ? "server"
+    : "none";
+
+  // =========================================================================
+  // 4. useEffect (auth, status, scroll)
+  // =========================================================================
+
+  // Auth check no boot
   useEffect(() => {
     const token = getToken();
     const u = getUser();
@@ -362,6 +416,25 @@ export default function ChatPage() {
     ]);
   }, [router]);
 
+  // Busca status do LLM no boot
+  useEffect(() => {
+    if (!authChecked) return;
+    fetch(`${API_BASE}/chat/status`, { headers: authHeaders() })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d) setStatus({ llm: !!d.llm_active, provider: d.provider || "?" });
+      })
+      .catch(() => {});
+  }, [authChecked]);
+
+  // Auto-scroll
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  // =========================================================================
+  // 5. EARLY RETURN - depois de TODOS os hooks
+  // =========================================================================
   if (!authChecked || !currentUser) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
@@ -370,69 +443,14 @@ export default function ChatPage() {
     );
   }
 
+  // =========================================================================
+  // 6. Handler functions (depois do early return)
+  // =========================================================================
   const logout = () => {
     clearAuth();
     router.replace("/login");
   };
 
-  const [messages, setMessages] = useState<Msg[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      content: "🙏 Ola! Eu sou o Kairos, seu assistente pastoral.",
-      ts: Date.now(),
-    },
-  ]);
-  const [input, setInput] = useState("");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [autoSpeak, setAutoSpeak] = useState(false);
-  const [status, setStatus] = useState<{ llm: boolean; provider: string }>({ llm: false, provider: "?" });
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const tts = useSpeechSynthesis();
-
-  // Busca status do LLM no boot
-  useEffect(() => {
-    if (!authChecked) return;
-    fetch(`${API_BASE}/chat/status`, { headers: authHeaders() }).then(r => r.ok ? r.json() : null).then((d) => {
-      if (d) setStatus({ llm: !!d.llm_active, provider: d.provider || "?" });
-    }).catch(() => {});
-  }, [authChecked]);
-
-  // Auto-scroll
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
-
-  const handleSpeechResult = useCallback((text: string, isFinal: boolean) => {
-    setInput(text);
-  }, []);
-
-  const speech = useSpeechRecognition(handleSpeechResult);
-
-  // Fallback server-side via MediaRecorder (funciona em qualquer navegador/celular)
-  const handleMediaTranscript = useCallback((text: string) => {
-    setInput((prev) => (prev ? prev + " " + text : text));
-  }, []);
-  const mediaRec = useMediaRecorder(handleMediaTranscript);
-
-  // Decide qual STT usar
-  const sttMode: "browser" | "server" | "none" = speech.supported
-    ? "browser"
-    : mediaRec.supported
-    ? "server"
-    : "none";
-
-  // Audio element ref para TTS server-side
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-
-  const install = useInstallPrompt();
-
-  // =========================================================================
-  // Upload de arquivo
-  // =========================================================================
   const handleFile = async (file: File) => {
     const id = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const type: Attachment["type"] =
@@ -466,9 +484,6 @@ export default function ChatPage() {
     setAttachments((a) => a.filter((att) => att.id !== id));
   };
 
-  // =========================================================================
-  // Envio
-  // =========================================================================
   const send = async () => {
     const text = input.trim();
     if ((!text && attachments.length === 0) || loading) return;
